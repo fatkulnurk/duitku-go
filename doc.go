@@ -148,6 +148,17 @@ Check the status of a transaction:
 
 	fmt.Printf("Status: %s (%s)\n", status.StatusMessage, status.StatusCode)
 
+# Voiding a Transaction
+
+Void a transaction (only supported for certain payment methods like OVO, ShopeePay, Credit Card):
+
+	status, err := client.VoidTransaction("ORDER123", "REFERENCE123")
+	if err != nil {
+		log.Fatalf("Error voiding transaction: %v", err)
+	}
+
+	fmt.Printf("Void Status: %s (%s)\n", status.StatusMessage, status.StatusCode)
+
 # Handling Callbacks
 
 Handle callbacks from Duitku in your HTTP handler:

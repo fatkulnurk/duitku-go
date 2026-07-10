@@ -199,3 +199,55 @@ func (c *Client) CheckTransaction(merchantOrderID string) (*TransactionStatusRes
 
 	return &response, nil
 }
+
+// VoidTransactionRequest represents a request to void a transaction
+type VoidTransactionRequest struct {
+	MerchantCode    string `json:"merchantCode"`
+	MerchantOrderID string `json:"merchantOrderId"`
+	Reference       string `json:"reference"`
+	Signature       string `json:"signature"`
+}
+
+// VoidTransactionResponse represents the response from voiding a transaction
+// url: https://docs.duitku.com/api/id/#void-transaction
+// example response:
+//
+//	{
+//	  "merchantOrderId": "abcde12345",
+//	  "reference": "DXXXXCX80TZJ85Q70QCI",
+//	  "statusCode": "00",
+//	  "statusMessage": "SUCCESS"
+//	}
+type VoidTransactionResponse struct {
+	MerchantOrderID string `json:"merchantOrderId"`
+	Reference       string `json:"reference"`
+	StatusCode      string `json:"statusCode"`
+	StatusMessage   string `json:"statusMessage"`
+}
+
+// VoidTransaction voids a transaction by merchant order ID and reference
+// URL: https://docs.duitku.com/api/id/#void-transaction
+// Only supported for certain payment methods (OVO, ShopeePay, Credit Card, etc.)
+func (c *Client) VoidTransaction(merchantOrderID, reference string) (*VoidTransactionResponse, error) {
+	// Create signature
+	signature := c.createSignatureMD5(c.config.MerchantCode, merchantOrderID, reference)
+
+	request := VoidTransactionRequest{
+		MerchantCode:    c.config.MerchantCode,
+		MerchantOrderID: merchantOrderID,
+		Reference:       reference,
+		Signature:       signature,
+	}
+
+	var response VoidTransactionResponse
+	err := c.doRequest("POST", "merchant/transaction/delete", request, &response)
+	if err != nil {
+		return nil, err
+	}
+
+	if response.StatusCode != "00" {
+		return nil, fmt.Errorf("error voiding transaction: %s", response.StatusMessage)
+	}
+
+	return &response, nil
+}

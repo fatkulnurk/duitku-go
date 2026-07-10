@@ -5,7 +5,7 @@
 [![Go Report Card](https://goreportcard.com/badge/github.com/fatkulnurk/duitku-go)](https://goreportcard.com/report/github.com/fatkulnurk/duitku-go)
 [![Go Reference](https://pkg.go.dev/badge/github.com/fatkulnurk/duitku-go.svg)](https://pkg.go.dev/github.com/fatkulnurk/duitku-go)
 
-A simple and lightweight Duitku.com Payment Gateway SDK for Golang — built with only Go's standard library. No external dependencies, making it ideal for minimal and secure payment gateway integrations. This package implements [Duitku API v2](https://docs.duitku.com/api/en/#introduction).
+A simple and lightweight Duitku.com Payment Gateway SDK for Golang — built with only Go's standard library. No external dependencies, making it ideal for minimal and secure payment gateway integrations. This package implements [Duitku API v2](https://docs.duitku.com/api/id/#introduction).
 
 ## Table of Contents
 - [🌟 Overview](#-overview)
@@ -60,9 +60,9 @@ import (
 func main() {
 	// Initialize the client
 	client := duitku.NewClient(duitku.Config{
-		MerchantCode: "YOUR_MERCHANT_CODE",
-		APIKey:       "YOUR_API_KEY",
-		IsSandbox:    true, // Set to false for production
+		MerchantCode:               "YOUR_MERCHANT_CODE",
+		APIKey:                     "YOUR_API_KEY",
+		IsSandbox:                  true, // Set to false for production
 		LogEveryRequestAndResponse: true, // Set to false to disable logging every request and response
 	})
 
@@ -104,6 +104,14 @@ func main() {
 	}
 
 	fmt.Printf("Status: %s (%s)\n", status.StatusMessage, status.StatusCode)
+
+	// Void a transaction (if needed)
+	voidResult, err := client.VoidTransaction("ORDER123", result.Reference)
+	if err != nil {
+		log.Printf("Error voiding transaction: %v", err)
+	} else {
+		fmt.Printf("Void Status: %s (%s)\n", voidResult.StatusMessage, voidResult.StatusCode)
+	}
 }
 ```
 
@@ -113,7 +121,7 @@ func main() {
 
 ### Payment Methods 💳
 
-- ✅ **Get Available Payment Methods** - [API Reference](https://docs.duitku.com/api/en/#get-payment-method)
+- ✅ **Get Available Payment Methods** - [API Reference](https://docs.duitku.com/api/id/#get-payment-method)
   - Retrieve all available payment methods based on transaction amount
   - Supports all payment methods including VA, e-wallets, QRIS, retail outlets, and more
   - Automatically filters methods based on minimum transaction amount
@@ -122,21 +130,26 @@ func main() {
 
 ### Transactions 🛒
 
-- ✅ **Create Transaction** - [API Reference](https://docs.duitku.com/api/en/#create-invoice-request-body-json)
+- ✅ **Create Transaction** - [API Reference](https://docs.duitku.com/api/id/#request-transaction)
   - Create payment invoices with complete customer details
   - Support for item details and additional parameters
   - Configurable expiry period
   - Returns payment URL and reference for customer redirection
 
-- ✅ **Check Transaction Status** - [API Reference](https://docs.duitku.com/api/en/#check-transaction)
+- ✅ **Check Transaction Status** - [API Reference](https://docs.duitku.com/api/id/#check-transaction)
   - Verify payment status using merchant order ID
-  - Get detailed transaction information including amount and reference
+  - Get detailed transaction information including amount and fee
+
+- ✅ **Void Transaction** - [API Reference](https://docs.duitku.com/api/id/#void-transaction)
+  - Cancel/void a transaction before payment is completed
+  - Supported for certain payment methods (OVO, ShopeePay, Credit Card, etc.)
+  - Requires merchant order ID and reference number
 
 [🔼 Jump to Table of Contents](#table-of-contents)
 
 ### Callbacks 📡
 
-- ✅ **Handle Payment Notifications** - [API Reference](https://docs.duitku.com/api/en/#callback)
+- ✅ **Handle Payment Notifications** - [API Reference](https://docs.duitku.com/api/id/#callback)
   - Secure callback handling with signature verification
   - Automatic parsing of callback data
   - Easy-to-use handler function for processing successful payments
@@ -200,7 +213,7 @@ func main() {
 
 ### Subscription Payments
 
-- ✅ **Subscription Support** - [API Reference](https://docs.duitku.com/api/en/#subscription)
+- ✅ **Subscription Support** - [API Reference](https://docs.duitku.com/api/id/#subscription)
   - Create recurring payment schedules
   - Support for daily, weekly, monthly, and yearly billing cycles
   - Configurable frequency and interval settings
@@ -225,10 +238,11 @@ transaction := duitku.TransactionRequest{
     
     // Subscription details
     SubscriptionDetail: &duitku.SubscriptionDetail{
-        Description:     "Monthly Premium Plan",
-        FrequencyType:    duitku.FrequencyMonthly,
-        FrequencyInterval: 1,
-        TotalNoOfCycles:   12,
+        Description:         "Monthly Premium Plan",
+        FrequencyType:       duitku.FrequencyMonthly,
+        FrequencyInterval:   1,
+        TotalNoOfCycles:     12,
+        FirstRunDate:        \"2024-01-01\", // Optional: First run date in YYYY-MM-DD format
     },
 }
 ```
