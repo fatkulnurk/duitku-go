@@ -1046,3 +1046,153 @@ func TestCreateSubscriptionTransaction(t *testing.T) {
 		t.Errorf("Response StatusMessage = %s, want SUCCESS", response.StatusMessage)
 	}
 }
+
+func TestVoidTransaction(t *testing.T) {
+// Create a test server that returns a successful response
+server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+// Check request method
+if r.Method != "POST" {
+t.Errorf("Expected POST request, got %s", r.Method)
+}
+
+// Check path
+if r.URL.Path != "/merchant/transaction/delete" {
+t.Errorf("Expected path /merchant/transaction/delete, got %s", r.URL.Path)
+}
+
+// Check content type
+if r.Header.Get("Content-Type") != "application/json" {
+t.Errorf("Expected Content-Type: application/json, got %s", r.Header.Get("Content-Type"))
+}
+
+// Decode request body
+var request struct {
+MerchantCode    string `json:"merchantCode"`
+MerchantOrderID string `json:"merchantOrderId"`
+Reference       string `json:"reference"`
+Signature       string `json:"signature"`
+}
+if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+t.Errorf("Error decoding request body: %v", err)
+http.Error(w, "Bad request", http.StatusBadRequest)
+return
+}
+
+// Check request fields
+if request.MerchantCode != "DXXXX" {
+t.Errorf("Expected MerchantCode: DXXXX, got %s", request.MerchantCode)
+}
+if request.MerchantOrderID != "ORDER123" {
+t.Errorf("Expected MerchantOrderID: ORDER123, got %s", request.MerchantOrderID)
+}
+if request.Reference != "DEV123456789" {
+t.Errorf("Expected Reference: DEV123456789, got %s", request.Reference)
+}
+if request.Signature == "" {
+t.Errorf("Expected Signature to be non-empty")
+}
+
+// Return a successful response
+w.Header().Set("Content-Type", "application/json")
+w.WriteHeader(http.StatusOK)
+w.Write([]byte(`{
+"merchantOrderId": "ORDER123",
+"reference": "DEV123456789",
+"statusCode": "00",
+"statusMessage": "SUCCESS"
+}`))
+}))
+defer server.Close()
+
+// Create a client that uses the test server
+client := &Client{
+config: Config{
+MerchantCode: "DXXXX",
+APIKey:       "DXXXXCX80TZJ85Q70QCI",
+},
+baseURL:    server.URL,
+httpClient: server.Client(),
+}
+
+// Test voiding a transaction
+response, err := client.VoidTransaction("ORDER123", "DEV123456789")
+if err != nil {
+t.Errorf("VoidTransaction() error = %v, want nil", err)
+}
+
+// Check the response
+if response.MerchantOrderID != "ORDER123" {
+t.Errorf("Response MerchantOrderID = %s, want ORDER123", response.MerchantOrderID)
+}
+if response.Reference != "DEV123456789" {
+t.Errorf("Response Reference = %s, want DEV123456789", response.Reference)
+}
+if response.StatusCode != "00" {
+t.Errorf("Response StatusCode = %s, want 00", response.StatusCode)
+}
+if response.StatusMessage != "SUCCESS" {
+t.Errorf("Response StatusMessage = %s, want SUCCESS", response.StatusMessage)
+}
+}
+
+func TestVoidTransactionError(t *testing.T) {
+// Create a test server that returns an error response
+server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+w.Header().Set("Content-Type", "application/json")
+w.WriteHeader(http.StatusOK)
+w.Write([]byte(`{
+"merchantOrderId": "ORDER123",
+"reference": "DEV123456789",
+"statusCode": "01",
+"statusMessage": "FAILED"
+}`))
+}))
+defer server.Close()
+
+// Create a client that uses the test server
+client := &Client{
+config: Config{
+MerchantCode: "DXXXX",
+APIKey:       "DXXXXCX80TZJ85Q70QCI",
+},
+baseURL:    server.URL,
+httpClient: server.Client(),
+}
+
+// Test voiding a transaction with error
+_, err := client.VoidTransaction("ORDER123", "DEV123456789")
+if err == nil {
+t.Errorf("VoidTransaction() error = nil, want error")
+}
+
+// Check the error message
+expectedErrMsg := "error voiding transaction: FAILED"
+if err.Error() != expectedErrMsg {
+t.Errorf("Expected error message '%s', got '%s'", expectedErrMsg, err.Error())
+}
+}
+
+func TestVoidTransactionWithServerError(t *testing.T) {
+// Create a test server that returns a server error
+server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+w.WriteHeader(http.StatusInternalServerError)
+w.Write([]byte(`{"responseCode":"500","responseMessage":"Internal Server Error"}`))
+}))
+defer server.Close()
+
+// Create a client that uses the test server
+client := &Client{
+config: Config{
+MerchantCode: "DXXXX",
+APIKey:       "DXXXXCX80TZJ85Q70QCI",
+},
+baseURL:    server.URL,
+httpClient: server.Client(),
+}
+
+// Test voiding a transaction with server error
+_, err := client.VoidTransaction("ORDER123", "DEV123456789")
+if err == nil {
+t.Errorf("VoidTransaction() expected error, got nil")
+}
+}
