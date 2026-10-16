@@ -106,13 +106,17 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
 					
 					<!-- E-Wallet -->
 					<optgroup label="E-Wallet">
-						<option value="OV">OVO (Support Void)</option>
-						<option value="SA">Shopee Pay Apps (Support Void)</option>
+						<option value="OV">OVO</option>
+						<option value="SA">Shopee Pay Apps</option>
 						<option value="LF">LinkAja Apps (Fixed Fee)</option>
 						<option value="LA">LinkAja Apps (Percentage Fee)</option>
 						<option value="DA">DANA</option>
 						<option value="SL">Shopee Pay Account Link</option>
 						<option value="OL">OVO Account Link</option>
+					</optgroup>
+					
+					<!-- E-Banking -->
+					<optgroup label="E-Banking">
 						<option value="JP">Jenius Pay</option>
 					</optgroup>
 					
@@ -120,8 +124,6 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
 					<optgroup label="QRIS">
 						<option value="SP">QRIS ShopeePay</option>
 						<option value="NQ">QRIS Nobu</option>
-						<option value="DQ">QRIS Dana</option>
-						<option value="GQ">QRIS Gudang Voucher</option>
 						<option value="SQ">QRIS Nusapay</option>
 					</optgroup>
 					
@@ -129,6 +131,13 @@ func homeHandler(w http.ResponseWriter, r *http.Request) {
 					<optgroup label="Paylater/Credit">
 						<option value="DN">Indodana Paylater</option>
 						<option value="AT">ATOME</option>
+					</optgroup>
+					
+					<!-- E-Commerce -->
+					<optgroup label="E-Commerce">
+						<option value="T1">Tokopedia Card Payment</option>
+						<option value="T2">Tokopedia E-Wallet</option>
+						<option value="T3">Tokopedia Others</option>
 					</optgroup>
 				</select>
 			</div>
@@ -189,12 +198,10 @@ func paymentHandler(w http.ResponseWriter, r *http.Request, client *duitku.Clien
 		PhoneNumber:     "08123456789", // Example phone number
 		CallbackURL:     fmt.Sprintf("%s/callback", getBaseURL(r)),
 		ReturnURL:       fmt.Sprintf("%s/return?order_id=%s", getBaseURL(r), merchantOrderID),
-		ExpiryPeriod:    60, // 60 minutes
 
 		// Add customer details
 		CustomerDetail: &duitku.CustomerDetail{
 			FirstName:   name,
-			LastName:    "",
 			Email:       email,
 			PhoneNumber: "08123456789",
 		},
@@ -207,6 +214,18 @@ func paymentHandler(w http.ResponseWriter, r *http.Request, client *duitku.Clien
 				Quantity: 1,
 			},
 		},
+	}
+
+	// Leave expiryPeriod unset for channels that always use their own default.
+	if limits, ok := duitku.ExpiryPeriodFor(paymentMethod); ok && !limits.Fixed {
+		transaction.ExpiryPeriod = limits.Default
+	}
+
+	// Fail fast with a clear message before calling Duitku.
+	if err := transaction.Validate(); err != nil {
+		log.Printf("Invalid transaction: %v", err)
+		http.Error(w, "Invalid transaction: "+err.Error(), http.StatusBadRequest)
+		return
 	}
 
 	// Create transaction
@@ -232,14 +251,15 @@ func callbackHandler(w http.ResponseWriter, r *http.Request, client *duitku.Clie
 			data.MerchantOrderID, data.Amount, data.ResultCode)
 
 		// Check if payment is successful
-		if data.IsSuccessful() {
+		switch {
+		case data.IsSuccessful():
 			// Update order status in database (in a real application)
 			// ...
 			log.Printf("Payment successful for order %s", data.MerchantOrderID)
-		} else {
-			// Handle failed payment
-			log.Printf("Payment failed for order %s with code %s",
-				data.MerchantOrderID, data.ResultCode)
+		case data.IsFailed():
+			log.Printf("Payment failed for order %s", data.MerchantOrderID)
+		default:
+			log.Printf("Unexpected resultCode %s for order %s", data.ResultCode, data.MerchantOrderID)
 		}
 
 		return nil
@@ -307,6 +327,7 @@ func checkStatusHandler(w http.ResponseWriter, r *http.Request, client *duitku.C
 			.status { font-weight: bold; }
 			.success { color: green; }
 			.pending { color: orange; }
+			.canceled { color: gray; }
 			.failed { color: red; }
 		</style>
 	</head>
@@ -334,22 +355,31 @@ func checkStatusHandler(w http.ResponseWriter, r *http.Request, client *duitku.C
 	w.Write([]byte(html))
 }
 
-// getBaseURL returns the base URL of the current request
+// getBaseURL returns the base URL of the current request.
+//
+// It honours X-Forwarded-Proto so that a deployment behind a TLS terminating
+// proxy does not advertise an http callback URL to Duitku.
 func getBaseURL(r *http.Request) string {
 	scheme := "http"
-	if r.TLS != nil {
+
+	if proto := r.Header.Get("X-Forwarded-Proto"); proto != "" {
+		scheme = proto
+	} else if r.TLS != nil {
 		scheme = "https"
 	}
+
 	return fmt.Sprintf("%s://%s", scheme, r.Host)
 }
 
 // getStatusClass returns the CSS class for a status code
 func getStatusClass(statusCode string) string {
 	switch statusCode {
-	case duitku.StatusSuccess:
+	case duitku.CheckTransactionStatusSuccess:
 		return "success"
-	case duitku.StatusPending:
+	case duitku.CheckTransactionStatusPending:
 		return "pending"
+	case duitku.CheckTransactionStatusCancelled:
+		return "canceled"
 	default:
 		return "failed"
 	}
