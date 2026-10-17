@@ -2,6 +2,7 @@ package duitku
 
 import (
 	"fmt"
+	"strconv"
 )
 
 // TransactionRequest represents a request to create a transaction
@@ -15,25 +16,26 @@ type TransactionRequest struct {
 	CustomerVaName  string `json:"customerVaName"`
 	ReturnURL       string `json:"returnUrl"`
 	CallbackURL     string `json:"callbackUrl"`
-	ExpiryPeriod    int    `json:"expiryPeriod"`
 
 	// Optional fields
-	AdditionalParam    string              `json:"additionalParam,omitempty"`
-	MerchantUserInfo   string              `json:"merchantUserInfo,omitempty"`
-	PhoneNumber        string              `json:"phoneNumber,omitempty"`
-	ItemDetails        []ItemDetail        `json:"itemDetails,omitempty"`
-	CustomerDetail     *CustomerDetail     `json:"customerDetail,omitempty"`
-	AccountLink        *AccountLink        `json:"accountLink,omitempty"`
-	CreditCardDetail   *CreditCardDetail   `json:"creditCardDetail,omitempty"`
-	IsSubscription     *bool               `json:"isSubscription,omitempty"`
-	SubscriptionDetail *SubscriptionDetail `json:"subscriptionDetail,omitempty"`
+	// ExpiryPeriod is the transaction lifetime in minutes. When left at zero it
+	// is omitted so Duitku applies the channel default. Each payment method has
+	// its own window; see ExpiryPeriodFor.
+	ExpiryPeriod     int               `json:"expiryPeriod,omitempty"`
+	AdditionalParam  string            `json:"additionalParam,omitempty"`
+	MerchantUserInfo string            `json:"merchantUserInfo,omitempty"`
+	PhoneNumber      string            `json:"phoneNumber,omitempty"`
+	ItemDetails      []ItemDetail      `json:"itemDetails,omitempty"`
+	CustomerDetail   *CustomerDetail   `json:"customerDetail,omitempty"`
+	AccountLink      *AccountLink      `json:"accountLink,omitempty"`
+	CreditCardDetail *CreditCardDetail `json:"creditCardDetail,omitempty"`
 }
 
 // CustomerDetail represents customer details for a transaction
 type CustomerDetail struct {
-	FirstName       string   `json:"firstName"`
-	LastName        string   `json:"lastName"`
-	Email           string   `json:"email"`
+	FirstName       string   `json:"firstName,omitempty"`
+	LastName        string   `json:"lastName,omitempty"`
+	Email           string   `json:"email,omitempty"`
 	PhoneNumber     string   `json:"phoneNumber,omitempty"`
 	BillingAddress  *Address `json:"billingAddress,omitempty"`
 	ShippingAddress *Address `json:"shippingAddress,omitempty"`
@@ -41,13 +43,13 @@ type CustomerDetail struct {
 
 // Address represents an address for billing or shipping
 type Address struct {
-	FirstName   string `json:"firstName"`
-	LastName    string `json:"lastName"`
-	Address     string `json:"address"`
-	City        string `json:"city"`
-	PostalCode  string `json:"postalCode"`
-	Phone       string `json:"phone"`
-	CountryCode string `json:"countryCode"`
+	FirstName   string `json:"firstName,omitempty"`
+	LastName    string `json:"lastName,omitempty"`
+	Address     string `json:"address,omitempty"`
+	City        string `json:"city,omitempty"`
+	PostalCode  string `json:"postalCode,omitempty"`
+	Phone       string `json:"phone,omitempty"`
+	CountryCode string `json:"countryCode,omitempty"`
 }
 
 // ItemDetail represents an item in a transaction
@@ -75,29 +77,32 @@ type OVOPaymentDetail struct {
 	Amount      int    `json:"amount"`
 }
 
-// ShopeeDetail represents Shopee payment details
+// ShopeeDetail represents Shopee payment details.
+//
+// Note: the Duitku docs contradict themselves on the voucher field name. The
+// "Shopee Detail" table and JSON object example call it `promo_ids`, while the
+// account link and request transaction examples call it `promoId`. The request
+// examples are the ones merchants integrate against, so `promoId` is used here.
+// https://docs.duitku.com/api/id/#shopee-detail
 type ShopeeDetail struct {
 	UseCoin bool   `json:"useCoin"`
-	PromoID string `json:"promoId,omitempty"`
+	PromoID string `json:"promoId"`
 }
 
 // CreditCardDetail represents credit card payment details
 type CreditCardDetail struct {
-	Acquirer     string   `json:"acquirer"`
+	// Acquirer is a 3 digit bank code, for example "014" for BCA or "022" for
+	// CIMB.
+	Acquirer string `json:"acquirer,omitempty"`
+	// BinWhitelist restricts which cards are accepted. Each entry is a 3 digit
+	// bank code or a 6 digit card BIN. The docs give conflicting maximums (25 in
+	// the Indonesian page, 15 in the English page), so no client side limit is
+	// enforced here.
 	BinWhitelist []string `json:"binWhitelist,omitempty"`
 }
 
-// SubscriptionDetail represents subscription details for credit card transactions
-type SubscriptionDetail struct {
-	Description       string `json:"description"`
-	FrequencyType     int    `json:"frequencyType"`
-	FrequencyInterval int    `json:"frequencyInterval"`
-	TotalNoOfCycles   int    `json:"totalNoOfCycles"`
-	FirstRunDate      string `json:"firstRunDate,omitempty"`
-}
-
 // TransactionResponse represents the response from creating a transaction
-// url: https://docs.duitku.com/api/en/#response-parameters
+// url: https://docs.duitku.com/api/id/#parameter-respon-request-transaksi
 // example response:
 //
 //	{
@@ -111,23 +116,31 @@ type SubscriptionDetail struct {
 //	 "statusMessage": "SUCCESS"
 //	}
 type TransactionResponse struct {
-	MerchantCode  string `json:"merchantCode"`
-	Reference     string `json:"reference"`
-	PaymentURL    string `json:"paymentUrl,omitempty"`
-	VANumber      string `json:"vaNumber,omitempty"`
-	QrString      string `json:"qrString,omitempty"`
-	Amount        string `json:"amount"`
-	StatusCode    string `json:"statusCode"`
-	StatusMessage string `json:"statusMessage"`
+	MerchantCode string `json:"merchantCode"`
+	Reference    string `json:"reference"`
+	PaymentURL   string `json:"paymentUrl,omitempty"`
+	VANumber     string `json:"vaNumber,omitempty"`
+	QrString     string `json:"qrString,omitempty"`
+	// AppURL is the payment link for e-commerce channels (Tokopedia). The docs
+	// example spells the key "AppUrl" while the parameter table spells it
+	// "appUrl"; encoding/json matches field names case-insensitively, so the
+	// tag below decodes either spelling.
+	AppURL        string      `json:"appUrl,omitempty"`
+	Amount        StringOrInt `json:"amount"`
+	StatusCode    string      `json:"statusCode"`
+	StatusMessage string      `json:"statusMessage"`
 }
 
 // CreateTransaction creates a new transaction
-// url: https://docs.duitku.com/api/en/#request-transaction
+// url: https://docs.duitku.com/api/id/#permintaan-transaksi
 func (c *Client) CreateTransaction(request TransactionRequest) (*TransactionResponse, error) {
-	// Create signature
-	signature := c.createSignatureMD5(c.config.MerchantCode, request.MerchantOrderID, fmt.Sprintf("%d", request.PaymentAmount))
+	// stringToSign = merchantCode + merchantOrderId + paymentAmount
+	signature := c.createSignatureHMACSHA256(
+		c.config.MerchantCode,
+		request.MerchantOrderID,
+		strconv.Itoa(request.PaymentAmount),
+	)
 
-	// Create the full request
 	fullRequest := struct {
 		TransactionRequest
 		MerchantCode string `json:"merchantCode"`
@@ -139,13 +152,12 @@ func (c *Client) CreateTransaction(request TransactionRequest) (*TransactionResp
 	}
 
 	var response TransactionResponse
-	err := c.doRequest("POST", "merchant/v2/inquiry", fullRequest, &response)
-	if err != nil {
+	if err := c.doRequest("POST", "merchant/v2/inquiry", fullRequest, &response); err != nil {
 		return nil, err
 	}
 
-	if response.StatusCode != "00" {
-		return nil, fmt.Errorf("error creating transaction: %s", response.StatusMessage)
+	if response.StatusCode != StatusSuccess {
+		return nil, fmt.Errorf("error creating transaction: %s (statusCode %s)", response.StatusMessage, response.StatusCode)
 	}
 
 	return &response, nil
@@ -159,7 +171,7 @@ type CheckTransactionRequest struct {
 }
 
 // TransactionStatusResponse represents the response from checking a transaction status
-// url: https://docs.duitku.com/api/en/#check-transaction-response-parameters
+// url: https://docs.duitku.com/api/id/#parameter-respon-cek-transaksi
 // example response:
 //
 //	{
@@ -171,19 +183,27 @@ type CheckTransactionRequest struct {
 //	 "statusMessage": "SUCCESS"
 //	}
 type TransactionStatusResponse struct {
-	MerchantOrderID string `json:"merchantOrderId"`
-	Reference       string `json:"reference"`
-	Amount          string `json:"amount"`
-	Fee             string `json:"fee"`
-	StatusCode      string `json:"statusCode"`
-	StatusMessage   string `json:"statusMessage"`
+	MerchantOrderID string      `json:"merchantOrderId"`
+	Reference       string      `json:"reference"`
+	Amount          StringOrInt `json:"amount"`
+	Fee             string      `json:"fee"`
+	StatusCode      string      `json:"statusCode"`
+	StatusMessage   string      `json:"statusMessage"`
 }
 
-// CheckTransaction checks the status of a transaction by merchant order ID
-// URL: https://docs.duitku.com/api/en/#check-transaction-response-parameters
+// CheckTransaction checks the status of a transaction by merchant order ID.
+//
+// A successful call does not imply a successful payment: statusCode 01
+// (pending) and 02 (canceled) are valid answers. Inspect
+// TransactionStatusResponse.StatusCode instead of treating a nil error as
+// "paid".
+//
+// Do not poll this endpoint aggressively. Duitku throttles it and can block a
+// caller for roughly an hour once the hit limit is reached.
+// url: https://docs.duitku.com/api/id/#cek-transaksi
 func (c *Client) CheckTransaction(merchantOrderID string) (*TransactionStatusResponse, error) {
-	// Create signature
-	signature := c.createSignatureMD5(c.config.MerchantCode, merchantOrderID)
+	// stringToSign = merchantCode + merchantOrderId
+	signature := c.createSignatureHMACSHA256(c.config.MerchantCode, merchantOrderID)
 
 	request := CheckTransactionRequest{
 		MerchantCode:    c.config.MerchantCode,
@@ -192,61 +212,8 @@ func (c *Client) CheckTransaction(merchantOrderID string) (*TransactionStatusRes
 	}
 
 	var response TransactionStatusResponse
-	err := c.doRequest("POST", "merchant/transactionStatus", request, &response)
-	if err != nil {
+	if err := c.doRequest("POST", "merchant/transactionStatus", request, &response); err != nil {
 		return nil, err
-	}
-
-	return &response, nil
-}
-
-// VoidTransactionRequest represents a request to void a transaction
-type VoidTransactionRequest struct {
-	MerchantCode    string `json:"merchantCode"`
-	MerchantOrderID string `json:"merchantOrderId"`
-	Reference       string `json:"reference"`
-	Signature       string `json:"signature"`
-}
-
-// VoidTransactionResponse represents the response from voiding a transaction
-// url: https://docs.duitku.com/api/id/#void-transaction
-// example response:
-//
-//	{
-//	  "merchantOrderId": "abcde12345",
-//	  "reference": "DXXXXCX80TZJ85Q70QCI",
-//	  "statusCode": "00",
-//	  "statusMessage": "SUCCESS"
-//	}
-type VoidTransactionResponse struct {
-	MerchantOrderID string `json:"merchantOrderId"`
-	Reference       string `json:"reference"`
-	StatusCode      string `json:"statusCode"`
-	StatusMessage   string `json:"statusMessage"`
-}
-
-// VoidTransaction voids a transaction by merchant order ID and reference
-// URL: https://docs.duitku.com/api/id/#void-transaction
-// Only supported for certain payment methods (OVO, ShopeePay, Credit Card, etc.)
-func (c *Client) VoidTransaction(merchantOrderID, reference string) (*VoidTransactionResponse, error) {
-	// Create signature
-	signature := c.createSignatureMD5(c.config.MerchantCode, merchantOrderID, reference)
-
-	request := VoidTransactionRequest{
-		MerchantCode:    c.config.MerchantCode,
-		MerchantOrderID: merchantOrderID,
-		Reference:       reference,
-		Signature:       signature,
-	}
-
-	var response VoidTransactionResponse
-	err := c.doRequest("POST", "merchant/transaction/delete", request, &response)
-	if err != nil {
-		return nil, err
-	}
-
-	if response.StatusCode != "00" {
-		return nil, fmt.Errorf("error voiding transaction: %s", response.StatusMessage)
 	}
 
 	return &response, nil

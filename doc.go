@@ -4,6 +4,10 @@ Package duitku provides a Go client for the Duitku Payment Gateway API.
 Duitku is an Indonesian payment gateway that supports various payment methods
 including virtual accounts, e-wallets, retail outlets, credit cards, and more.
 
+This package implements Duitku API v2 with the HMAC-SHA256 signature scheme.
+The older MD5 and plain SHA256 signature methods are obsolete and are not
+implemented: https://docs.duitku.com/api/id/
+
 # Basic Usage
 
 Initialize a client with your merchant code and API key:
@@ -40,7 +44,6 @@ Create a transaction with the minimum required fields:
 		Email:           "customer@example.com",
 		CallbackURL:     "https://example.com/callback",
 		ReturnURL:       "https://example.com/return",
-		ExpiryPeriod:    10, // 10 minutes
 	}
 
 	result, err := client.CreateTransaction(transaction)
@@ -51,9 +54,24 @@ Create a transaction with the minimum required fields:
 	fmt.Printf("Payment URL: %s\n", result.PaymentURL)
 	fmt.Printf("Reference: %s\n", result.Reference)
 
+# Validating a Transaction Locally
+
+Validate is opt-in. CreateTransaction does not call it, so a request that
+skips it is sent to Duitku and rejected there with HTTP 400. Calling Validate
+first turns those rejections into a clearer local error:
+
+	if err := transaction.Validate(); err != nil {
+		log.Fatalf("Invalid transaction: %v", err)
+	}
+
+Validate enforces the documented rules: a minimum amount of 10000, the
+documented field lengths, item totals that match paymentAmount, the per-channel
+requirements, and the expiry window for the payment method.
+
 # Creating a Transaction with Additional Details
 
-Create a transaction with additional details like customer information and item details:
+Create a transaction with additional details like customer information and item
+details:
 
 	transaction := duitku.TransactionRequest{
 		PaymentAmount:   40000,
@@ -65,8 +83,7 @@ Create a transaction with additional details like customer information and item 
 		PhoneNumber:     "08123456789",
 		CallbackURL:     "https://example.com/callback",
 		ReturnURL:       "https://example.com/return",
-		ExpiryPeriod:    10,
-		
+
 		// Add customer details
 		CustomerDetail: &duitku.CustomerDetail{
 			FirstName:   "John",
@@ -92,8 +109,8 @@ Create a transaction with additional details like customer information and item 
 				CountryCode: "ID",
 			},
 		},
-		
-		// Add item details
+
+		// Add item details. The total of price*quantity must equal paymentAmount.
 		ItemDetails: []duitku.ItemDetail{
 			{
 				Name:     "Product 1",
@@ -108,33 +125,13 @@ Create a transaction with additional details like customer information and item 
 		},
 	}
 
-# Creating a Subscription Transaction
+# Expiry Period
 
-Create a recurring subscription transaction (only supported for credit card payments):
+Leave ExpiryPeriod at zero to let Duitku apply the channel default, or look up
+the documented window for a channel:
 
-	isSubscription := true
-	transaction := duitku.TransactionRequest{
-		// Basic transaction details
-		PaymentAmount:   50000,
-		PaymentMethod:   duitku.PaymentMethodCreditCard,
-		MerchantOrderID: "SUB123",
-		ProductDetails:  "Monthly Subscription",
-		CustomerVaName:  "John Doe",
-		Email:           "customer@example.com",
-		CallbackURL:     "https://example.com/callback",
-		ReturnURL:       "https://example.com/return",
-		ExpiryPeriod:    60,
-		
-		// Enable subscription
-		IsSubscription: &isSubscription,
-		
-		// Subscription details
-		SubscriptionDetail: &duitku.SubscriptionDetail{
-			Description:      "Monthly Premium Plan",
-			FrequencyType:    duitku.FrequencyMonthly,
-			FrequencyInterval: 1,
-			TotalNoOfCycles:   12,
-		},
+	if limits, ok := duitku.ExpiryPeriodFor(duitku.PaymentMethodQrisShopeePay); ok {
+		fmt.Printf("Default %d minutes, maximum %d minutes\n", limits.Default, limits.Max)
 	}
 
 # Checking Transaction Status
@@ -146,18 +143,18 @@ Check the status of a transaction:
 		log.Fatalf("Error checking transaction: %v", err)
 	}
 
-	fmt.Printf("Status: %s (%s)\n", status.StatusMessage, status.StatusCode)
-
-# Voiding a Transaction
-
-Void a transaction (only supported for certain payment methods like OVO, ShopeePay, Credit Card):
-
-	status, err := client.VoidTransaction("ORDER123", "REFERENCE123")
-	if err != nil {
-		log.Fatalf("Error voiding transaction: %v", err)
+	switch status.StatusCode {
+	case duitku.CheckTransactionStatusSuccess:
+		fmt.Println("Paid")
+	case duitku.CheckTransactionStatusPending:
+		fmt.Println("Waiting for payment")
+	case duitku.CheckTransactionStatusCancelled:
+		fmt.Println("Canceled")
 	}
 
-	fmt.Printf("Void Status: %s (%s)\n", status.StatusMessage, status.StatusCode)
+A nil error only means the call succeeded. Check StatusCode before treating a
+payment as complete. Duitku throttles this endpoint and can block a caller for
+about an hour when the hit limit is reached, so do not poll it aggressively.
 
 # Handling Callbacks
 
@@ -165,22 +162,29 @@ Handle callbacks from Duitku in your HTTP handler:
 
 	http.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
 		client.HandleCallback(w, r, func(data *duitku.CallbackData) error {
-			// Check if payment is successful
-			if data.IsSuccessful() {
+			// The signature has already been verified at this point.
+			switch {
+			case data.IsSuccessful():
 				// Update order status in database
 				fmt.Printf("Payment successful for order %s\n", data.MerchantOrderID)
-			} else {
-				// Handle failed payment
-				fmt.Printf("Payment failed for order %s with code %s\n", 
-					data.MerchantOrderID, data.ResultCode)
+			case data.IsFailed():
+				fmt.Printf("Payment failed for order %s\n", data.MerchantOrderID)
 			}
 			return nil
 		})
 	})
 
+HandleCallback answers HTTP 200 when the handler succeeds. Duitku retries a
+callback up to five times when it does not receive a 200, so a handler error
+answers 500 on purpose to trigger a retry.
+
+Note that resultCode is not part of the signed string, so a captured callback
+can have its resultCode changed without breaking the signature. Confirm the
+final state with CheckTransaction before releasing goods or credit.
+
 # Payment Methods
 
-The package provides constants for all payment methods supported by Duitku:
+The package provides constants for every payment method code Duitku documents:
 
 	// Credit Card
 	duitku.PaymentMethodCreditCard // Credit Card (VC)
@@ -195,15 +199,15 @@ The package provides constants for all payment methods supported by Duitku:
 	duitku.PaymentMethodATMBersama  // ATM Bersama (A1)
 	duitku.PaymentMethodArthaGraha  // Bank Artha Graha Virtual Account (AG)
 	duitku.PaymentMethodNeoCommerce // Bank Neo Commerce Virtual Account (NC)
-	duitku.PaymentMethodBRI         // Bank BRI Virtual Account (BR)
+	duitku.PaymentMethodBRI         // BRIVA / Bank BRI Virtual Account (BR)
 	duitku.PaymentMethodSahabat     // Bank Sahabat Sampoerna Virtual Account (S1)
 	duitku.PaymentMethodDanamon     // Danamon Virtual Account (DM)
 	duitku.PaymentMethodBSI         // BSI Virtual Account (BV)
 
 	// Retail Outlets
-	duitku.PaymentMethodAlfamart  // Alfamart/Pegadaian/POS (FT)
-	duitku.PaymentMethodPegadaian // Pegadaian (FT)
-	duitku.PaymentMethodPOS       // POS (FT)
+	duitku.PaymentMethodAlfamart  // Pegadaian/ALFA/Pos (FT)
+	duitku.PaymentMethodPegadaian // Pegadaian/ALFA/Pos (FT), alias of Alfamart
+	duitku.PaymentMethodPOS       // Pegadaian/ALFA/Pos (FT), alias of Alfamart
 	duitku.PaymentMethodIndomaret // Indomaret (IR)
 
 	// E-Wallet
@@ -214,48 +218,56 @@ The package provides constants for all payment methods supported by Duitku:
 	duitku.PaymentMethodDANA           // DANA (DA)
 	duitku.PaymentMethodShopeeLink     // Shopee Pay Account Link (SL)
 	duitku.PaymentMethodOVOLink        // OVO Account Link (OL)
-	duitku.PaymentMethodJeniusPay      // Jenius Pay (JP)
+
+	// E-Banking
+	duitku.PaymentMethodJeniusPay // Jenius Pay (JP)
 
 	// QRIS
-	duitku.PaymentMethodQrisShopeePay     // QRIS ShopeePay (SP)
-	duitku.PaymentMethodQrisNobu          // QRIS Nobu (QN)
-	duitku.PaymentMethodQrisDana          // QRIS Dana (DQ)
-	duitku.PaymentMethodQrisGudangVoucher // QRIS Gudang Voucher (GQ)
-	duitku.PaymentMethodQrisNusapay       // QRIS Nusapay (SQ)
+	duitku.PaymentMethodQrisShopeePay // QRIS Shopee Pay (SP)
+	duitku.PaymentMethodQrisNobu      // QRIS Nobu (NQ)
+	duitku.PaymentMethodQrisNusapay   // QRIS Nusapay (SQ)
 
-	// Paylater/Credit
-	duitku.PaymentMethodIndodanaPaylater // Indodana Paylater (ID)
+	// Paylater / credit. customerDetail and itemDetails are required.
+	duitku.PaymentMethodIndodanaPaylater // Indodana Paylater (DN)
 	duitku.PaymentMethodAtome            // ATOME (AT)
+
+	// E-Commerce. customerVaName is required.
+	duitku.PaymentMethodTokopediaCard    // Tokopedia Card Payment (T1)
+	duitku.PaymentMethodTokopediaEWallet // Tokopedia E-Wallet (T2)
+	duitku.PaymentMethodTokopediaOthers  // Tokopedia Others (T3)
 
 # Transaction Status Codes
 
-The package provides constants for transaction status codes:
+The package provides constants for each status code set. The callback, the
+redirect and the check transaction endpoint use different meanings for the same
+numbers, so they are kept apart:
 
-	duitku.StatusSuccess    // Success (00)
-	duitku.StatusPending    // Pending (01)
+	// inquiry response statusCode
+	duitku.StatusSuccess // Success (00)
+	duitku.StatusPending // Pending (01)
 
-# Callback Status Codes
-
-The package provides constants for callback status codes:
-
+	// callback resultCode
 	duitku.CallbackStatusSuccess // Success (00)
 	duitku.CallbackStatusFailed  // Failed (01)
 
-# Check Transaction Status Codes
+	// redirect resultCode appended to returnUrl
+	duitku.RedirectStatusSuccess  // Success (00)
+	duitku.RedirectStatusPending  // Pending (01)
+	duitku.RedirectStatusCanceled // Canceled (02)
 
-The package provides constants for check transaction status codes:
-
+	// check transaction response statusCode
 	duitku.CheckTransactionStatusSuccess   // Success (00)
 	duitku.CheckTransactionStatusPending   // Pending (01)
 	duitku.CheckTransactionStatusCancelled // Cancelled (02)
 
-# Subscription Frequency Types
+# Signatures
 
-For credit card subscription transactions, the package provides constants for frequency types:
+Every request is signed with HMAC-SHA256 and the callback signature is verified
+the same way. The API key is the HMAC key, not a suffix of the message:
 
-	duitku.FrequencyDaily   // Daily (1)
-	duitku.FrequencyWeekly  // Weekly (2)
-	duitku.FrequencyMonthly // Monthly (3)
-	duitku.FrequencyYearly  // Yearly (4)
+	get payment method: HMAC_SHA256(merchantcode + amount + datetime, apiKey)
+	inquiry:            HMAC_SHA256(merchantCode + merchantOrderId + paymentAmount, apiKey)
+	check transaction:  HMAC_SHA256(merchantCode + merchantOrderId, apiKey)
+	callback:           HMAC_SHA256(merchantCode + amount + merchantOrderId, apiKey)
 */
 package duitku

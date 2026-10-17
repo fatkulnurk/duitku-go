@@ -1,0 +1,74 @@
+# duitku-go
+
+> Go client for the Duitku Payment Gateway API v2. Standard library only, no
+> dependencies. Signs every request with HMAC-SHA256 and verifies callbacks with
+> a constant-time comparison.
+
+Duitku is an Indonesian payment gateway. This package wraps its API v2:
+payment method discovery, transaction creation, transaction status checks, and
+callback handling.
+
+## Install
+
+```bash
+go get github.com/fatkulnurk/duitku-go
+```
+
+## Entry point
+
+```go
+import "github.com/fatkulnurk/duitku-go"
+
+client := duitku.NewClient(duitku.Config{
+    MerchantCode: "DXXXX",
+    APIKey:       "your-api-key",
+    IsSandbox:    true,
+})
+```
+
+## API
+
+- `client.GetPaymentMethods(amount int) ([]PaymentMethod, error)`
+- `client.CreateTransaction(request TransactionRequest) (*TransactionResponse, error)`
+- `client.CheckTransaction(merchantOrderID string) (*TransactionStatusResponse, error)`
+- `client.HandleCallback(w, r, handler func(*CallbackData) error)`
+- `client.ParseCallback(r *http.Request) (*CallbackData, error)`
+- `client.VerifyCallbackSignature(data *CallbackData) bool`
+- `request.Validate() error`
+- `duitku.ExpiryPeriodFor(paymentMethod string) (ExpiryPeriodLimits, bool)`
+- `duitku.ValidateExpiryPeriod(paymentMethod string, expiryPeriod int) error`
+
+## Signature scheme
+
+Every operation uses `HMAC_SHA256(stringToSign, apiKey)` as lowercase hex, with
+the API key as the HMAC key.
+
+| Operation | stringToSign |
+|---|---|
+| Get Payment Method | `merchantcode + amount + datetime` |
+| Create Transaction | `merchantCode + merchantOrderId + paymentAmount` |
+| Check Transaction | `merchantCode + merchantOrderId` |
+| Callback | `merchantCode + amount + merchantOrderId` |
+
+MD5 and plain SHA256 are obsolete and not implemented.
+
+## Payment method codes
+
+`VC` credit card. `BC` `M2` `VA` `I1` `B1` `BT` `A1` `AG` `NC` `BR` `S1` `DM`
+`BV` virtual accounts. `FT` `IR` retail. `OV` `SA` `LF` `LA` `DA` `SL` `OL`
+e-wallet. `JP` e-banking. `SP` `NQ` `SQ` QRIS. `DN` `AT` paylater. `T1` `T2`
+`T3` e-commerce.
+
+## Documentation
+
+- [AGENTS.md](AGENTS.md): full API reference, invariants, gotchas, contribution
+  rules. Start here.
+- [SKILL.md](SKILL.md): task oriented integration guide for AI agents.
+- [README.md](README.md): human facing overview and migration notes.
+- [CHANGELOG.md](CHANGELOG.md): release history.
+- Duitku API docs: https://docs.duitku.com/api/id/
+
+## Optional
+
+- [go.mod](go.mod): module definition, no dependencies
+- [example/main.go](example/main.go): runnable demo web server

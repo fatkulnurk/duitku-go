@@ -1,0 +1,61 @@
+---
+description: Duitku Go SDK conventions for the github.com/fatkulnurk/duitku-go repository
+globs: ["*.go"]
+alwaysApply: false
+---
+
+# Duitku Go SDK
+
+Repository instructions are in `AGENTS.md`. Read it before editing. Summary:
+
+## Non negotiable
+
+- **Standard library only.** No third party imports. `go.mod` has no `require`.
+- **HMAC-SHA256 signatures.** `hmac.New(sha256.New, []byte(apiKey))`, then
+  `hex.EncodeToString`. Never `md5.Sum`, never `sha256.Sum256(msg + apiKey)`.
+- **Verify with `hmac.Equal`.** Never `==`, never `strings.EqualFold`.
+- **All tests are table driven**, looping over a `tests` slice with named cases.
+- **Signature tests assert fixed literals**, not values recomputed by the
+  helper under test.
+- **Tests never hit the network.** Use `httptest.NewServer` or an injected
+  `http.RoundTripper`.
+
+## stringToSign per operation
+
+| Operation | stringToSign |
+|---|---|
+| Get Payment Method | `merchantcode + amount + datetime` |
+| Create Transaction | `merchantCode + merchantOrderId + paymentAmount` |
+| Check Transaction | `merchantCode + merchantOrderId` |
+| Callback | `merchantCode + amount + merchantOrderId` |
+
+A correct signature is 64 lowercase hex characters. 32 means MD5, which is
+wrong.
+
+## Layout
+
+- `client.go` transport, signing, `APIError`
+- `transaction.go` `TransactionRequest`, `CreateTransaction`, `CheckTransaction`
+- `payment_methods.go` `GetPaymentMethods`
+- `callback.go` `CallbackData`, `ParseCallback`, `HandleCallback`
+- `constants.go` payment method and status codes
+- `expiry.go` per channel expiry windows
+- `validation.go` `TransactionRequest.Validate`
+- `types.go` `StringOrInt`
+
+## Intentional Duitku quirks
+
+- `merchantcode` lowercase on Get Payment Method only.
+- `amount` may be a string or a number; use `StringOrInt`.
+- Callback `resultCode` is unsigned, so confirm with `CheckTransaction`.
+- Callback `01` is Failed; redirect `01` is Pending, `02` is Canceled.
+- `expiryPeriod` 0 means "channel default".
+
+## Verify
+
+```bash
+gofmt -l .   # empty
+go build ./...
+go vet ./...
+go test ./...
+```

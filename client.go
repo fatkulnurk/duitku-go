@@ -2,15 +2,17 @@ package duitku
 
 import (
 	"bytes"
-	"crypto/md5"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -20,6 +22,10 @@ const (
 	// ProductionBaseURL is the base URL for the Duitku production environment
 	ProductionBaseURL = "https://passport.duitku.com/webapi/api"
 )
+
+// maxLoggedBodyLength caps how much of a raw response body is embedded in an
+// error message, so an unexpected HTML error page cannot flood logs.
+const maxLoggedBodyLength = 256
 
 // Config holds the configuration for the Duitku client
 type Config struct {
@@ -33,7 +39,7 @@ type Config struct {
 	HTTPClient *http.Client
 	// Logger is an optional custom logger
 	Logger *log.Logger
-	// Log every request and response
+	// LogEveryRequestAndResponse logs every request and response
 	LogEveryRequestAndResponse bool
 }
 
@@ -58,6 +64,12 @@ func NewClient(config Config) *Client {
 		httpClient = &http.Client{
 			Timeout: 30 * time.Second,
 		}
+	} else if httpClient.Timeout == 0 {
+		// A caller-supplied client without a timeout would block forever.
+		// Copy it so we do not mutate the caller's value.
+		cloned := *httpClient
+		cloned.Timeout = 30 * time.Second
+		httpClient = &cloned
 	}
 
 	logger := config.Logger
@@ -74,53 +86,72 @@ func NewClient(config Config) *Client {
 	}
 }
 
-// createSignatureSHA256 creates a SHA256 signature from the provided parameters
-func (c *Client) createSignatureSHA256(params ...string) string {
-	var combined string
-	for _, param := range params {
-		combined += param
+// validateCredentials reports whether the client has the credentials required
+// to sign a request. Signing with an empty API key would produce a signature
+// that anyone could reproduce, so this is checked before every call.
+func (c *Client) validateCredentials() error {
+	if c.config.MerchantCode == "" {
+		return errors.New("duitku: MerchantCode is required")
 	}
-	combined += c.config.APIKey
-
-	hash := sha256.Sum256([]byte(combined))
-	return hex.EncodeToString(hash[:])
+	if c.config.APIKey == "" {
+		return errors.New("duitku: APIKey is required")
+	}
+	return nil
 }
 
-// createSignatureMD5 creates an MD5 signature from the provided parameters
-func (c *Client) createSignatureMD5(params ...string) string {
-	var combined string
+// createSignatureHMACSHA256 builds the Duitku API v2 signature.
+//
+//	stringToSign = the parameters concatenated in the order given
+//	signature    = HMAC_SHA256(stringToSign, apiKey), lowercase hex
+//
+// Every Duitku v2 operation uses this construction. The older MD5 and plain
+// SHA256 schemes are obsolete:
+// https://docs.duitku.com/api/id/#permintaan-transaksi
+func (c *Client) createSignatureHMACSHA256(params ...string) string {
+	var stringToSign strings.Builder
 	for _, param := range params {
-		combined += param
+		stringToSign.WriteString(param)
 	}
-	combined += c.config.APIKey
 
-	hash := md5.Sum([]byte(combined))
-	return hex.EncodeToString(hash[:])
+	mac := hmac.New(sha256.New, []byte(c.config.APIKey))
+	mac.Write([]byte(stringToSign.String()))
+
+	return hex.EncodeToString(mac.Sum(nil))
 }
 
 // doRequest performs an HTTP request to the Duitku API
 func (c *Client) doRequest(method, endpoint string, body interface{}, result interface{}) error {
+	if err := c.validateCredentials(); err != nil {
+		return err
+	}
+
 	url := fmt.Sprintf("%s/%s", c.baseURL, endpoint)
 
 	var reqBody io.Reader
 	if body != nil {
 		jsonBody, err := json.Marshal(body)
 		if err != nil {
-			return fmt.Errorf("error marshaling request body: %w", err)
+			return fmt.Errorf("duitku: marshaling request body: %w", err)
 		}
 		reqBody = bytes.NewBuffer(jsonBody)
 	}
 
 	req, err := http.NewRequest(method, url, reqBody)
 	if err != nil {
-		return fmt.Errorf("error creating request: %w", err)
+		return fmt.Errorf("duitku: creating request: %w", err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("error making request: %w", err)
+		return fmt.Errorf("duitku: making request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	rawBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("duitku: reading response body (HTTP %d): %w", resp.StatusCode, err)
 	}
 
 	if c.logEveryRequestAndResponse {
@@ -130,47 +161,110 @@ func (c *Client) doRequest(method, endpoint string, body interface{}, result int
 		c.logger.Printf("Request body: %+v \n", body)
 		c.logger.Printf("Response status code: %d \n", resp.StatusCode)
 		c.logger.Printf("Response status: %s \n", resp.Status)
-
-		// Read the response body
-		respBody, err := io.ReadAll(resp.Body)
-		if err != nil {
-			c.logger.Printf("Error reading response body: %v\n", err)
-		} else {
-			c.logger.Printf("Response body: %s\n", string(respBody))
-		}
-
-		// Create a new reader with the same data for further processing
-		resp.Body = io.NopCloser(bytes.NewBuffer(respBody))
-
+		c.logger.Printf("Response body: %s\n", string(rawBody))
 		c.logger.Println("-=-=-=-= [client.go][doRequest] -=-=-=-=")
 	}
 
-	defer resp.Body.Close()
-
 	if resp.StatusCode != http.StatusOK {
-		var errorResp ErrorResponse
-		if err := json.NewDecoder(resp.Body).Decode(&errorResp); err != nil {
-			return fmt.Errorf("error decoding error response: %w", err)
-		}
-		return fmt.Errorf("API error: %s (code: %s)", errorResp.Message, errorResp.Code)
+		return newAPIError(resp.StatusCode, rawBody)
 	}
 
-	if result != nil {
-		if err := json.NewDecoder(resp.Body).Decode(result); err != nil {
-			return fmt.Errorf("error decoding response: %w", err)
-		}
+	if result == nil {
+		return nil
+	}
+
+	if err := json.Unmarshal(rawBody, result); err != nil {
+		return fmt.Errorf("duitku: decoding response (HTTP %d): %w", resp.StatusCode, err)
 	}
 
 	return nil
 }
 
-// ErrorResponse represents an error response from the Duitku API
-type ErrorResponse struct {
-	Code    string `json:"responseCode"`
-	Message string `json:"responseMessage"`
+// APIError is returned when Duitku answers with a non-200 HTTP status.
+//
+// Duitku documents HTTP 400/401/404/409 with a body carrying a "Message" key
+// (capital M), which differs from the success envelopes that use
+// responseCode/responseMessage or statusCode/statusMessage. All of those
+// spellings are accepted here so the real reason is never lost.
+// https://docs.duitku.com/api/id/#http-code
+type APIError struct {
+	// StatusCode is the HTTP status code returned by Duitku
+	StatusCode int
+	// Code is the Duitku error code when one is present
+	Code string
+	// Message is the human readable reason reported by Duitku
+	Message string
+	// RawBody is the raw response body, truncated for safety
+	RawBody string
 }
 
 // Error returns the error message
-func (e ErrorResponse) Error() string {
-	return fmt.Sprintf("%s: %s", e.Code, e.Message)
+func (e *APIError) Error() string {
+	message := e.Message
+	if message == "" {
+		message = http.StatusText(e.StatusCode)
+	}
+
+	if e.Code != "" {
+		return fmt.Sprintf("duitku: API error (HTTP %d, code %s): %s", e.StatusCode, e.Code, message)
+	}
+
+	return fmt.Sprintf("duitku: API error (HTTP %d): %s", e.StatusCode, message)
+}
+
+// errorEnvelope covers every error body shape Duitku is known to send.
+type errorEnvelope struct {
+	Message         string `json:"Message"`
+	ResponseMessage string `json:"responseMessage"`
+	StatusMessage   string `json:"statusMessage"`
+	ResponseCode    string `json:"responseCode"`
+	StatusCode      string `json:"statusCode"`
+}
+
+// newAPIError builds an APIError from a non-200 response. A body that is not
+// JSON (an HTML gateway page, an empty body, a rate-limit block) must not be
+// reported as a decoding failure, so parsing is best effort.
+func newAPIError(statusCode int, rawBody []byte) *APIError {
+	apiErr := &APIError{
+		StatusCode: statusCode,
+		RawBody:    truncate(strings.TrimSpace(string(rawBody)), maxLoggedBodyLength),
+	}
+
+	var envelope errorEnvelope
+	if err := json.Unmarshal(rawBody, &envelope); err == nil {
+		switch {
+		case envelope.Message != "":
+			apiErr.Message = envelope.Message
+		case envelope.ResponseMessage != "":
+			apiErr.Message = envelope.ResponseMessage
+		case envelope.StatusMessage != "":
+			apiErr.Message = envelope.StatusMessage
+		}
+
+		switch {
+		case envelope.ResponseCode != "":
+			apiErr.Code = envelope.ResponseCode
+		case envelope.StatusCode != "":
+			apiErr.Code = envelope.StatusCode
+		}
+	}
+
+	if apiErr.Message == "" {
+		if apiErr.RawBody != "" {
+			apiErr.Message = apiErr.RawBody
+		} else {
+			apiErr.Message = http.StatusText(statusCode)
+		}
+	}
+
+	return apiErr
+}
+
+// truncate shortens s to at most max runes, appending an ellipsis when cut.
+func truncate(s string, max int) string {
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max]) + "..."
 }

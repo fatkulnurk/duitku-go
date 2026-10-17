@@ -2,6 +2,7 @@ package duitku
 
 import (
 	"fmt"
+	"strconv"
 	"time"
 )
 
@@ -14,7 +15,7 @@ type PaymentMethod struct {
 }
 
 // PaymentMethodResponse represents the response from the get payment methods endpoint
-// url: https://docs.duitku.com/api/en/#response-parameter
+// url: https://docs.duitku.com/api/id/#parameter-respon-get-payment-method
 // example response:
 //
 //	{
@@ -41,7 +42,10 @@ type PaymentMethodResponse struct {
 	ResponseMessage string          `json:"responseMessage"`
 }
 
-// GetPaymentMethodsRequest represents the request to get payment methods
+// GetPaymentMethodsRequest represents the request to get payment methods.
+//
+// This endpoint is the odd one out in the Duitku API: it expects the lowercase
+// key `merchantcode` while the inquiry and check endpoints expect `merchantCode`.
 type GetPaymentMethodsRequest struct {
 	MerchantCode string `json:"merchantcode"`
 	Amount       int    `json:"amount"`
@@ -50,10 +54,16 @@ type GetPaymentMethodsRequest struct {
 }
 
 // GetPaymentMethods retrieves the available payment methods for the specified amount
-// url: https://docs.duitku.com/api/en/#get-payment-method
+// url: https://docs.duitku.com/api/id/#get-payment-method
 func (c *Client) GetPaymentMethods(amount int) ([]PaymentMethod, error) {
 	datetime := time.Now().Format("2006-01-02 15:04:05")
-	signature := c.createSignatureSHA256(c.config.MerchantCode, fmt.Sprintf("%d", amount), datetime)
+
+	// stringToSign = merchantcode + amount + datetime
+	signature := c.createSignatureHMACSHA256(
+		c.config.MerchantCode,
+		strconv.Itoa(amount),
+		datetime,
+	)
 
 	request := GetPaymentMethodsRequest{
 		MerchantCode: c.config.MerchantCode,
@@ -63,13 +73,12 @@ func (c *Client) GetPaymentMethods(amount int) ([]PaymentMethod, error) {
 	}
 
 	var response PaymentMethodResponse
-	err := c.doRequest("POST", "merchant/paymentmethod/getpaymentmethod", request, &response)
-	if err != nil {
+	if err := c.doRequest("POST", "merchant/paymentmethod/getpaymentmethod", request, &response); err != nil {
 		return nil, err
 	}
 
-	if response.ResponseCode != "00" {
-		return nil, fmt.Errorf("error getting payment methods: %s", response.ResponseMessage)
+	if response.ResponseCode != StatusSuccess {
+		return nil, fmt.Errorf("error getting payment methods: %s (responseCode %s)", response.ResponseMessage, response.ResponseCode)
 	}
 
 	return response.PaymentFee, nil
