@@ -5,7 +5,8 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
+	"encoding/json/jsontext"
+	jsonv2 "encoding/json/v2"
 	"errors"
 	"fmt"
 	"io"
@@ -26,6 +27,24 @@ const (
 // maxLoggedBodyLength caps how much of a raw response body is embedded in an
 // error message, so an unexpected HTML error page cannot flood logs.
 const maxLoggedBodyLength = 256
+
+// duitkuJSONOptions are the JSON options applied to every Duitku payload.
+//
+// Duitku is a third party gateway whose own documentation disagrees about key
+// casing: the transaction response example spells the e-commerce link "AppUrl"
+// while the parameter table spells it "appUrl". Failing an otherwise valid
+// payment response over a casing difference is worse than decoding it, so
+// case-insensitive name matching is enabled explicitly. encoding/json/v2 is
+// case sensitive by default; the v1 package this code previously relied on was
+// not.
+//
+// AllowDuplicateNames is enabled for the same reason. v2 rejects duplicate
+// object members by default while v1 permitted them, and a repeated key must
+// not turn a payment response into a decoding error.
+var duitkuJSONOptions = []jsonv2.Options{
+	jsonv2.MatchCaseInsensitiveNames(true),
+	jsontext.AllowDuplicateNames(true),
+}
 
 // Config holds the configuration for the Duitku client
 type Config struct {
@@ -129,7 +148,7 @@ func (c *Client) doRequest(method, endpoint string, body interface{}, result int
 
 	var reqBody io.Reader
 	if body != nil {
-		jsonBody, err := json.Marshal(body)
+		jsonBody, err := jsonv2.Marshal(body, duitkuJSONOptions...)
 		if err != nil {
 			return fmt.Errorf("duitku: marshaling request body: %w", err)
 		}
@@ -173,7 +192,7 @@ func (c *Client) doRequest(method, endpoint string, body interface{}, result int
 		return nil
 	}
 
-	if err := json.Unmarshal(rawBody, result); err != nil {
+	if err := jsonv2.Unmarshal(rawBody, result, duitkuJSONOptions...); err != nil {
 		return fmt.Errorf("duitku: decoding response (HTTP %d): %w", resp.StatusCode, err)
 	}
 
@@ -231,7 +250,7 @@ func newAPIError(statusCode int, rawBody []byte) *APIError {
 	}
 
 	var envelope errorEnvelope
-	if err := json.Unmarshal(rawBody, &envelope); err == nil {
+	if err := jsonv2.Unmarshal(rawBody, &envelope, duitkuJSONOptions...); err == nil {
 		switch {
 		case envelope.Message != "":
 			apiErr.Message = envelope.Message

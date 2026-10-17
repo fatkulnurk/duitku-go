@@ -23,6 +23,8 @@ go get github.com/fatkulnurk/duitku-go
 
 Import path is `github.com/fatkulnurk/duitku-go`, package name is `duitku`.
 
+Requires Go 1.27 or newer, because the package uses `encoding/json/v2`.
+
 ## Commands
 
 Run these from the repository root before claiming any task is done.
@@ -246,6 +248,36 @@ Non-200 responses return `*APIError`. Use `errors.As` to inspect it. Body
 parsing is best effort: an HTML gateway page, an empty body, or a rate limit
 block is reported as an HTTP failure, never as a JSON decoding error.
 
+## JSON encoding
+
+The package uses `encoding/json/v2` (`encoding/json/jsontext` for tokens).
+In Go 1.27 the v2 experiment is part of the toolchain baseline, so no
+`GOEXPERIMENT` flag is needed, and `encoding/json` is itself implemented on top
+of v2.
+
+`duitkuJSONOptions` in `client.go` is applied to every payload and sets two
+options that are deliberately more lenient than the v2 defaults:
+
+- `MatchCaseInsensitiveNames(true)`, because Duitku's docs disagree about key
+  casing (`AppUrl` in one place, `appUrl` in another).
+- `AllowDuplicateNames(true)`, because v2 rejects duplicate object members
+  while v1 permitted them, and a repeated key must not fail a payment response.
+
+Do not "modernize" these away. Removing either one makes the client reject
+valid Duitku responses. `TestJSONOptionsTolerance` in `transaction_test.go`
+pins both.
+
+Two v2 differences are easy to get wrong when editing struct tags:
+
+- `omitempty` under v2 omits only JSON-empty values, so a zero `int` or `false`
+  is **kept**. Use `omitzero` for Go zero values. `ExpiryPeriod` relies on this;
+  with `omitempty` the client would send `"expiryPeriod":0`.
+- Unmarshaling is case sensitive by default, unlike v1.
+
+`StringOrInt` implements the v2 `MarshalerTo` and `UnmarshalerFrom` interfaces.
+Do not add `MarshalJSON`/`UnmarshalJSON` back: `encoding/json` already dispatches
+to the v2 methods, so they would be dead code.
+
 ## Signature specification
 
 Every operation uses `HMAC_SHA256(stringToSign, apiKey)` encoded as lowercase
@@ -290,6 +322,9 @@ Breaking any of these is a bug:
    circular test that passes even when the algorithm is wrong.
 6. **Tests never touch the real network.** Use `httptest.NewServer` or an
    injected `http.RoundTripper`.
+7. **Every JSON payload goes through `duitkuJSONOptions`.** Never call
+   `json.Marshal` or `json.Unmarshal` without them. Never use `omitempty` on a
+   Go zero value where omission matters; use `omitzero`. See "JSON encoding".
 
 ## Gotchas
 
@@ -302,8 +337,9 @@ These are real behaviours that trip people up. They are all intentional.
   tables say integer, the docs examples quote it. `StringOrInt` decodes both.
   Call `.String()` or `.Int()` rather than comparing to a literal.
 - **`AppUrl` casing is inconsistent in the docs.** The JSON example uses
-  `AppUrl`, the parameter table uses `appUrl`. `encoding/json` matches field
-  names case insensitively, so both decode into `TransactionResponse.AppURL`.
+  `AppUrl`, the parameter table uses `appUrl`. `duitkuJSONOptions` enables
+  case-insensitive name matching, so both decode into
+  `TransactionResponse.AppURL`.
 - **Callback `resultCode` is not covered by the signature.** A captured
   callback can have its result flipped without breaking the HMAC. Always
   confirm with `CheckTransaction` before releasing goods or credit.
