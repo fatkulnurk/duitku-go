@@ -952,3 +952,61 @@ func TestTransactionEndpoints(t *testing.T) {
 		})
 	}
 }
+
+// TestJSONOptionsTolerance pins the deliberate leniency of duitkuJSONOptions.
+//
+// Duitku is a third party gateway whose docs disagree about key casing, so a
+// casing difference or a repeated key must never turn a valid payment response
+// into a decoding error. These cases would fail under the encoding/json/v2
+// defaults, which are case sensitive and reject duplicate members.
+func TestJSONOptionsTolerance(t *testing.T) {
+	tests := []struct {
+		name         string
+		responseBody string
+		wantAmount   StringOrInt
+	}{
+		{
+			name:         "Documented casing",
+			responseBody: `{"merchantCode":"DXXXX","amount":"40000","statusCode":"00","statusMessage":"SUCCESS"}`,
+			wantAmount:   "40000",
+		},
+		{
+			name:         "All lowercase keys",
+			responseBody: `{"merchantcode":"DXXXX","amount":"40000","statuscode":"00","statusmessage":"SUCCESS"}`,
+			wantAmount:   "40000",
+		},
+		{
+			name:         "Mixed casing keys",
+			responseBody: `{"MerchantCode":"DXXXX","AMOUNT":"40000","StatusCode":"00","StatusMessage":"SUCCESS"}`,
+			wantAmount:   "40000",
+		},
+		{
+			name:         "Duplicate amount members",
+			responseBody: `{"merchantCode":"DXXXX","amount":"40000","amount":"40000","statusCode":"00","statusMessage":"SUCCESS"}`,
+			wantAmount:   "40000",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server, _ := captureServer(t, http.StatusOK, tt.responseBody)
+
+			client := newTestClient(server)
+
+			response, err := client.CreateTransaction(baseTransactionRequest())
+			if err != nil {
+				t.Fatalf("CreateTransaction() error = %v, want nil", err)
+			}
+
+			if response.StatusCode != StatusSuccess {
+				t.Errorf("Response StatusCode = %s, want %s", response.StatusCode, StatusSuccess)
+			}
+			if response.StatusMessage != "SUCCESS" {
+				t.Errorf("Response StatusMessage = %s, want SUCCESS", response.StatusMessage)
+			}
+			if response.Amount != tt.wantAmount {
+				t.Errorf("Response Amount = %q, want %q", response.Amount, tt.wantAmount)
+			}
+		})
+	}
+}

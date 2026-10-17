@@ -21,7 +21,11 @@ type TransactionRequest struct {
 	// ExpiryPeriod is the transaction lifetime in minutes. When left at zero it
 	// is omitted so Duitku applies the channel default. Each payment method has
 	// its own window; see ExpiryPeriodFor.
-	ExpiryPeriod     int               `json:"expiryPeriod,omitempty"`
+	//
+	// This is omitzero rather than omitempty: under encoding/json/v2 omitempty
+	// keeps a zero int, which would send "expiryPeriod":0 and change the
+	// meaning from "use the channel default" to "expire immediately".
+	ExpiryPeriod     int               `json:"expiryPeriod,omitzero"`
 	AdditionalParam  string            `json:"additionalParam,omitempty"`
 	MerchantUserInfo string            `json:"merchantUserInfo,omitempty"`
 	PhoneNumber      string            `json:"phoneNumber,omitempty"`
@@ -123,8 +127,8 @@ type TransactionResponse struct {
 	QrString     string `json:"qrString,omitempty"`
 	// AppURL is the payment link for e-commerce channels (Tokopedia). The docs
 	// example spells the key "AppUrl" while the parameter table spells it
-	// "appUrl"; encoding/json matches field names case-insensitively, so the
-	// tag below decodes either spelling.
+	// "appUrl". duitkuJSONOptions enables case-insensitive name matching, so
+	// either spelling decodes into this field.
 	AppURL        string      `json:"appUrl,omitempty"`
 	Amount        StringOrInt `json:"amount"`
 	StatusCode    string      `json:"statusCode"`

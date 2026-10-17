@@ -1,7 +1,7 @@
 package duitku
 
 import (
-	"encoding/json"
+	"encoding/json/jsontext"
 	"fmt"
 	"strconv"
 	"strings"
@@ -15,6 +15,11 @@ import (
 // accepts both, so a response never fails to decode because of that
 // discrepancy. It marshals back as a bare number when the value is an integer
 // literal and as a string otherwise.
+//
+// It implements the encoding/json/v2 MarshalerTo and UnmarshalerFrom
+// interfaces. In Go 1.27 the encoding/json package is implemented on top of
+// encoding/json/v2, so those two methods also serve callers that still import
+// encoding/json.
 type StringOrInt string
 
 // String returns the underlying value as a plain string.
@@ -42,40 +47,62 @@ func (s StringOrInt) IsZero() bool {
 	return s == ""
 }
 
-// UnmarshalJSON accepts a JSON string, a JSON number, or null.
-func (s *StringOrInt) UnmarshalJSON(data []byte) error {
+// isIntegerLiteral reports whether the value should be sent as a bare JSON
+// number rather than a quoted string. Keeping non-integer values as strings
+// means a value such as "0.00" does not silently change JSON type.
+func (s StringOrInt) isIntegerLiteral() bool {
+	if s == "" {
+		return false
+	}
+
+	_, err := strconv.ParseInt(string(s), 10, 64)
+
+	return err == nil
+}
+
+// setFromJSONValue stores a decoded JSON value: a quoted string is unescaped, a
+// bare number keeps its literal text so no precision is lost, and null clears
+// the value.
+func (s *StringOrInt) setFromJSONValue(data []byte) error {
 	trimmed := strings.TrimSpace(string(data))
 	if trimmed == "" || trimmed == "null" {
 		*s = ""
 		return nil
 	}
 
-	if trimmed[0] == '"' {
-		var str string
-		if err := json.Unmarshal(data, &str); err != nil {
-			return err
-		}
-		*s = StringOrInt(str)
+	if trimmed[0] != '"' {
+		*s = StringOrInt(trimmed)
 		return nil
 	}
 
-	// Bare number (or anything else JSON-valid). Keep the literal text so no
-	// precision is lost.
-	*s = StringOrInt(trimmed)
+	// Reading a token rather than slicing off the quotes so that escape
+	// sequences are decoded properly.
+	decoder := jsontext.NewDecoder(strings.NewReader(trimmed))
+	token, err := decoder.ReadToken()
+	if err != nil {
+		return fmt.Errorf("duitku: %s is not a valid JSON string: %w", trimmed, err)
+	}
+
+	*s = StringOrInt(token.String())
+
 	return nil
 }
 
-// MarshalJSON emits a bare number when the value is an integer literal,
-// otherwise a JSON string. Keeping non-integer values as strings means a value
-// such as "0.00" does not silently change JSON type.
-func (s StringOrInt) MarshalJSON() ([]byte, error) {
-	if s == "" {
-		return []byte(`""`), nil
+// MarshalJSONTo implements the encoding/json/v2 MarshalerTo interface.
+func (s StringOrInt) MarshalJSONTo(enc *jsontext.Encoder) error {
+	if s.isIntegerLiteral() {
+		return enc.WriteValue(jsontext.Value(s))
 	}
 
-	if _, err := strconv.ParseInt(string(s), 10, 64); err == nil {
-		return []byte(string(s)), nil
+	return enc.WriteToken(jsontext.String(string(s)))
+}
+
+// UnmarshalJSONFrom implements the encoding/json/v2 UnmarshalerFrom interface.
+func (s *StringOrInt) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
+	value, err := dec.ReadValue()
+	if err != nil {
+		return err
 	}
 
-	return json.Marshal(string(s))
+	return s.setFromJSONValue(value)
 }

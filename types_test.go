@@ -2,6 +2,9 @@ package duitku
 
 import (
 	"encoding/json"
+	"encoding/json/jsontext"
+	jsonv2 "encoding/json/v2"
+	"strings"
 	"testing"
 )
 
@@ -150,6 +153,156 @@ func TestStringOrIntIsZeroAndString(t *testing.T) {
 			}
 			if got := tt.value.String(); got != tt.wantString {
 				t.Errorf("String() = %q, want %q", got, tt.wantString)
+			}
+		})
+	}
+}
+
+// TestStringOrIntUnderJSONv2 exercises the type through encoding/json/v2, which
+// is the package the client actually uses. It covers the v2 native
+// MarshalJSONTo and UnmarshalJSONFrom methods.
+func TestStringOrIntUnderJSONv2(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		want     StringOrInt
+		wantJSON string
+	}{
+		{
+			name:     "Quoted amount",
+			input:    `{"amount":"40000"}`,
+			want:     "40000",
+			wantJSON: `{"amount":40000}`,
+		},
+		{
+			name:     "Bare amount",
+			input:    `{"amount":40000}`,
+			want:     "40000",
+			wantJSON: `{"amount":40000}`,
+		},
+		{
+			name:     "Decimal fee stays a string",
+			input:    `{"amount":"0.00"}`,
+			want:     "0.00",
+			wantJSON: `{"amount":"0.00"}`,
+		},
+		{
+			name:     "Null clears the value",
+			input:    `{"amount":null}`,
+			want:     "",
+			wantJSON: `{"amount":""}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var holder struct {
+				Amount StringOrInt `json:"amount"`
+			}
+
+			if err := jsonv2.Unmarshal([]byte(tt.input), &holder); err != nil {
+				t.Fatalf("Unmarshal(%s) error = %v, want nil", tt.input, err)
+			}
+			if holder.Amount != tt.want {
+				t.Errorf("Unmarshal(%s) = %q, want %q", tt.input, holder.Amount, tt.want)
+			}
+
+			encoded, err := jsonv2.Marshal(holder)
+			if err != nil {
+				t.Fatalf("Marshal() error = %v, want nil", err)
+			}
+			if string(encoded) != tt.wantJSON {
+				t.Errorf("Marshal() = %s, want %s", encoded, tt.wantJSON)
+			}
+		})
+	}
+}
+
+// TestStringOrIntInterfacesAgree proves the encoding/json and encoding/json/v2
+// code paths produce identical bytes, so a caller can use either package.
+func TestStringOrIntInterfacesAgree(t *testing.T) {
+	tests := []struct {
+		name  string
+		value StringOrInt
+	}{
+		{name: "Numeric", value: "40000"},
+		{name: "Zero", value: "0"},
+		{name: "Empty", value: ""},
+		{name: "Decimal", value: "0.00"},
+		{name: "Non numeric", value: "abc"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			legacy, err := json.Marshal(tt.value)
+			if err != nil {
+				t.Fatalf("encoding/json Marshal(%q) error = %v, want nil", tt.value, err)
+			}
+
+			native, err := jsonv2.Marshal(tt.value)
+			if err != nil {
+				t.Fatalf("encoding/json/v2 Marshal(%q) error = %v, want nil", tt.value, err)
+			}
+
+			if string(legacy) != string(native) {
+				t.Errorf("encoding/json produced %s but encoding/json/v2 produced %s", legacy, native)
+			}
+		})
+	}
+}
+
+// TestStringOrIntRejectsMalformedInput covers the error paths. The encoding
+// interfaces only ever hand over validated JSON, so malformed input is fed in
+// directly to exercise the guards.
+func TestStringOrIntRejectsMalformedInput(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{name: "Unterminated string", input: `"40000`},
+		{name: "Lone quote", input: `"`},
+		{name: "Invalid escape sequence", input: `"a\qb"`},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var direct StringOrInt
+			if err := direct.setFromJSONValue([]byte(tt.input)); err == nil {
+				t.Errorf("setFromJSONValue(%s) error = nil, want an error", tt.input)
+			}
+
+			decoder := jsontext.NewDecoder(strings.NewReader(tt.input))
+
+			var fromDecoder StringOrInt
+			if err := fromDecoder.UnmarshalJSONFrom(decoder); err == nil {
+				t.Errorf("UnmarshalJSONFrom(%s) error = nil, want an error", tt.input)
+			}
+		})
+	}
+}
+
+// TestStringOrIntUnescapesStrings proves a quoted value is decoded rather than
+// taken literally, which matters because the raw text is stored in the type.
+func TestStringOrIntUnescapesStrings(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  StringOrInt
+	}{
+		{name: "Plain digits", input: `"40000"`, want: "40000"},
+		{name: "Escaped quote", input: `"a\"b"`, want: `a"b`},
+		{name: "Escaped newline", input: `"a\nb"`, want: "a\nb"},
+		{name: "Unicode escape", input: `"\u0034\u0030"`, want: "40"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var value StringOrInt
+			if err := jsonv2.Unmarshal([]byte(tt.input), &value); err != nil {
+				t.Fatalf("Unmarshal(%s) error = %v, want nil", tt.input, err)
+			}
+			if value != tt.want {
+				t.Errorf("Unmarshal(%s) = %q, want %q", tt.input, value, tt.want)
 			}
 		})
 	}

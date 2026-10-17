@@ -85,9 +85,20 @@ contains breaking changes; see the migration notes below.
 - `TransactionResponse.Amount` and `TransactionStatusResponse.Amount` are now
   `StringOrInt` instead of `string`. Use `.String()` or `.Int()`.
 - `PaymentMethodJeniusPay` is grouped under e-banking, matching the docs.
-- `go.mod` requires Go 1.22.
+- `go.mod` requires Go 1.27.
+- JSON encoding and decoding now use `encoding/json/v2`, which is enabled by
+  default in Go 1.27. `TransactionRequest.ExpiryPeriod` uses the `omitzero` tag
+  option, because under v2 `omitempty` keeps a zero `int` and would send
+  `"expiryPeriod":0`. `StringOrInt` implements the v2 `MarshalerTo` and
+  `UnmarshalerFrom` interfaces.
+- Decoding stays deliberately lenient: `MatchCaseInsensitiveNames` and
+  `AllowDuplicateNames` are enabled, because Duitku's own documentation
+  disagrees about key casing and a third party gateway must not fail a payment
+  response over it. `encoding/json/v2` is case sensitive and rejects duplicate
+  members by default.
 - CI runs `go test -race`, checks `gofmt`, pins the `staticcheck` version, and
   runs the formatter and cache steps in a useful order.
+- CI tests Go 1.27 only, instead of 1.22 through 1.26.
 - Test suite rewritten to be table driven throughout, asserting fixed signature
   vectors rather than recomputing the expected value with the helper under test.
 - The `.gitignore` no longer ignores `.github/workflows/`, and the stray
@@ -105,3 +116,7 @@ contains breaking changes; see the migration notes below.
 5. **Signatures change automatically.** No action needed, but be aware that
    requests which previously appeared to succeed against a mock will now produce
    different signatures, which is correct.
+6. **Upgrade to Go 1.27 or newer.** `go.mod` now requires it, because the
+   package uses `encoding/json/v2`. With `GOTOOLCHAIN=auto`, which is the
+   default, the Go command downloads a suitable toolchain automatically instead
+   of failing.

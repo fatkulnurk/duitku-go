@@ -34,7 +34,7 @@ Duitku is a payment gateway service that provides various payment methods for In
 
 ## 📋 Requirements
 
-- Go 1.22 or higher
+- Go 1.27 or higher
 - Duitku merchant account and API credentials
 
 [🔼 Jump to Table of Contents](#table-of-contents)

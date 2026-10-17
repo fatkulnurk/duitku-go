@@ -1,3 +1,3 @@
 module github.com/fatkulnurk/duitku-go
 
-go 1.22
+go 1.27
