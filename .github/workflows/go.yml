@@ -71,7 +71,9 @@ jobs:
       with:
         go-version: '1.26'
         check-latest: true
+        # Keyed on go.mod: this module has no dependencies and no go.sum.
         cache: true
+        cache-dependency-path: go.mod
 
     - name: Get dependencies
       run: go mod download
