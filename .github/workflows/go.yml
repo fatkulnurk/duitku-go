@@ -23,8 +23,11 @@ jobs:
       with:
         go-version: ${{ matrix.go-version }}
         check-latest: true
-        # Enables the built-in module and build cache, before any build step.
+        # Enables the built-in build cache, before any build step. This module
+        # has no dependencies and therefore no go.sum, so key the cache on
+        # go.mod instead; setup-go cannot find a default dependency file.
         cache: true
+        cache-dependency-path: go.mod
 
     - name: Verify gofmt
       run: |
